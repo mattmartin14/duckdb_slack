@@ -1,0 +1,13 @@
+extension:
+  name: slack
+  description: Post plain-text Slack messages from DuckDB using native secrets
+  version: 0.1.0
+  language: C++
+  build: cmake
+  license: MIT
+  maintainers:
+    - mattmartin14
+
+repo:
+  github: mattmartin14/duckdb_slack
+  ref: main

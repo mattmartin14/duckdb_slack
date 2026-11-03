@@ -1,0 +1,41 @@
+# name: test/sql/slack.test
+# description: test Slack webhook secrets and function binding
+# group: [sql]
+
+require slack
+
+statement ok
+CREATE TEMP SECRET slack_test (
+    TYPE slack,
+    WEBHOOK_URL 'https://hooks.slack.com/services/T000/B000/test'
+);
+
+query I
+SELECT secret_string LIKE '%webhook_url=redacted%'
+FROM duckdb_secrets()
+WHERE name = 'slack_test';
+----
+true
+
+statement ok
+CREATE TEMP SECRET slack_wrong_type (TYPE http, BEARER_TOKEN 'not-a-real-token');
+
+statement error
+CALL slack_post('missing_secret', msg => 'test');
+----
+Slack secret 'missing_secret' was not found
+
+statement error
+CALL slack_post('slack_wrong_type', msg => 'test');
+----
+Secret 'slack_wrong_type' is not a Slack secret
+
+statement error
+CALL slack_post('slack_test');
+----
+Binder Error
+
+statement error
+CALL slack_post('slack_test', 'test');
+----
+Binder Error
