@@ -1,8 +1,8 @@
-# name: test/sql/slack.test
+# name: test/sql/slack_msg.test
 # description: test Slack webhook secrets and function binding
 # group: [sql]
 
-require slack
+require slack_msg
 
 statement ok
 CREATE TEMP SECRET slack_test (

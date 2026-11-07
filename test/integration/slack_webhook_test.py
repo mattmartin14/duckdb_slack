@@ -22,7 +22,7 @@ def duckdb_executable(root, platform):
 
 
 DUCKDB = duckdb_executable(ROOT, os.name)
-EXTENSION = ROOT / "build/release/extension/slack/slack.duckdb_extension"
+EXTENSION = ROOT / "build/release/extension/slack_msg/slack_msg.duckdb_extension"
 FAKE_WEBHOOK = "https://hooks.slack.com/services/T000/B000/test"
 
 

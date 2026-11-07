@@ -4,7 +4,7 @@
 
 namespace duckdb {
 
-class SlackExtension : public Extension {
+class SlackMsgExtension : public Extension {
 public:
 	void Load(ExtensionLoader &db) override;
 	std::string Name() override;

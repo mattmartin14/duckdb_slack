@@ -1,10 +1,10 @@
-# DuckDB Slack Extension
+# DuckDB Slack Message Extension
 
-The `slack` DuckDB community extension posts messages to a Slack channel using
+The `slack_msg` DuckDB extension posts messages to a Slack channel using
 an incoming webhook stored in DuckDB's native Secrets Manager.
 
 The extension is prepared for a future community submission. It is not
-currently published or installable with `INSTALL slack FROM community`.
+currently published or installable with `INSTALL slack_msg FROM community`.
 
 ## Features
 
@@ -30,6 +30,12 @@ where messages should be posted. The webhook is bound to that channel. It
 cannot be used to select another destination in a `slack_post` call. Keep the
 webhook URL private; anyone who obtains it can post to its associated channel.
 
+## Related extension
+
+The existing [duckdb-slack](https://github.com/dentiny/duckdb-slack) community
+extension searches Slack messages using a user OAuth token. `slack_msg` instead
+posts notifications using an incoming webhook; it does not search Slack.
+
 ## Build
 
 This C++ extension uses the DuckDB extension template and targets DuckDB
@@ -52,7 +58,7 @@ make test
 ```
 
 The build produces a DuckDB shell at `build/release/duckdb` and a loadable
-extension at `build/release/extension/slack/slack.duckdb_extension`. Local
+extension at `build/release/extension/slack_msg/slack_msg.duckdb_extension`. Local
 builds are unsigned; load them only if you trust the build. For example:
 
 ```sh
@@ -62,15 +68,15 @@ build/release/duckdb -unsigned
 Then load the local artifact:
 
 ```sql
-LOAD './build/release/extension/slack/slack.duckdb_extension';
+LOAD './build/release/extension/slack_msg/slack_msg.duckdb_extension';
 ```
 
 After the extension is accepted and published by the DuckDB Community
 Extensions repository, users will be able to install it with:
 
 ```sql
-INSTALL slack FROM community;
-LOAD slack;
+INSTALL slack_msg FROM community;
+LOAD slack_msg;
 ```
 
 ## Create a secret and post a message
@@ -91,7 +97,9 @@ CALL slack_post(
 
 `secret_name` is the name of an existing DuckDB `slack` secret; it can also
 be passed as the first positional argument for compatibility. `msg` is required
-and must be passed by name. The destination channel is fixed by the webhook.
+and must be passed by name. The extension is named `slack_msg`; its secret type
+remains `slack` and its posting function remains `slack_post`. The destination
+channel is fixed by the webhook.
 
 ### Formatted table notifications
 

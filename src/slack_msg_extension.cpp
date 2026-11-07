@@ -1,6 +1,6 @@
 #define DUCKDB_EXTENSION_MAIN
 
-#include "slack_extension.hpp"
+#include "slack_msg_extension.hpp"
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
@@ -407,17 +407,17 @@ void LoadInternal(ExtensionLoader &loader) {
 
 } // namespace
 
-void SlackExtension::Load(ExtensionLoader &loader) {
+void SlackMsgExtension::Load(ExtensionLoader &loader) {
 	LoadInternal(loader);
 }
 
-std::string SlackExtension::Name() {
-	return "slack";
+std::string SlackMsgExtension::Name() {
+	return "slack_msg";
 }
 
-std::string SlackExtension::Version() const {
-#ifdef EXT_VERSION_SLACK
-	return EXT_VERSION_SLACK;
+std::string SlackMsgExtension::Version() const {
+#ifdef EXT_VERSION_SLACK_MSG
+	return EXT_VERSION_SLACK_MSG;
 #else
 	return "";
 #endif
@@ -427,7 +427,7 @@ std::string SlackExtension::Version() const {
 
 extern "C" {
 
-DUCKDB_CPP_EXTENSION_ENTRY(slack, loader) {
+DUCKDB_CPP_EXTENSION_ENTRY(slack_msg, loader) {
 	duckdb::LoadInternal(loader);
 }
 }

@@ -1,6 +1,6 @@
 extension:
-  name: slack
-  description: Post plain-text Slack messages from DuckDB using native secrets
+  name: slack_msg
+  description: Post Slack messages and structured notifications from DuckDB
   version: 0.1.0
   language: C++
   build: cmake
@@ -11,3 +11,16 @@ extension:
 repo:
   github: mattmartin14/duckdb_slack
   ref: main
+
+docs:
+  hello_world: |
+    CREATE SECRET slack_test (
+      TYPE slack,
+      WEBHOOK_URL 'https://hooks.slack.com/services/your/workspace/webhook'
+    );
+    CALL slack_post(secret_name => 'slack_test', msg => 'Hello from DuckDB!');
+  extended_description: |
+    Post plain-text messages or structured notification cards to Slack using
+    an incoming webhook stored in DuckDB's Secrets Manager. The existing
+    [duckdb-slack](https://github.com/dentiny/duckdb-slack) extension searches
+    Slack messages; slack_msg posts them.
