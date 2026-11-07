@@ -1,7 +1,7 @@
 # DuckDB Slack Extension
 
-The `slack` DuckDB community extension posts one plain-text message to a Slack
-channel using an incoming webhook stored in DuckDB's native Secrets Manager.
+The `slack` DuckDB community extension posts messages to a Slack channel using
+an incoming webhook stored in DuckDB's native Secrets Manager.
 
 The extension is prepared for a future community submission. It is not
 currently published or installable with `INSTALL slack FROM community`.
@@ -15,11 +15,13 @@ currently published or installable with `INSTALL slack FROM community`.
 - HTTPS JSON requests, TLS certificate verification, bounded timeouts, and
   no automatic retries.
 - A single success or failure status row for each invocation.
+- Optional green or red message cards for formatted reports.
 
 The v1 webhook interface does not use a bot token or `chat.postMessage`. Slack
 incoming webhooks select their channel when the webhook is created, so the SQL
-call does not need a `channel` argument. Block Kit, file uploads, threaded
-replies, bulk posting, and scheduled notifications are out of scope.
+call does not need a `channel` argument. Arbitrary Block Kit payloads, file
+uploads, threaded replies, bulk posting, and scheduled notifications are out
+of scope.
 
 ## Create a Slack incoming webhook
 
@@ -82,14 +84,42 @@ CREATE SECRET slack_test (
 );
 
 CALL slack_post(
-    'slack_test',
+    secret_name => 'slack_test',
     msg => 'Hello from DuckDB!'
 );
 ```
 
-The first positional argument is the name of an existing DuckDB `slack`
-secret. `msg` is required and must be passed by name. The destination channel
-is fixed by the webhook.
+`secret_name` is the name of an existing DuckDB `slack` secret; it can also
+be passed as the first positional argument for compatibility. `msg` is required
+and must be passed by name. The destination channel is fixed by the webhook.
+
+### Formatted table notifications
+
+Use the optional `color` argument with `good` (green) or `danger` (red) to
+send a Slack card. `msg` is rendered as Slack mrkdwn in the card; use triple
+backticks to keep a table aligned in a monospace code block. Without `color`,
+the existing plain-text payload is unchanged.
+
+```sql
+SET VARIABLE report = (
+    SELECT concat('```', chr(10),
+        'Metric     | Count', chr(10),
+        '-----------+------', chr(10),
+        string_agg(printf('%-10s | %5d', metric, count), chr(10) ORDER BY idx),
+        chr(10), '```')
+    FROM (VALUES (1, 'Processed', 42), (2, 'Failed', 0)) AS data(idx, metric, count)
+);
+
+CALL slack_post(
+    secret_name => 'slack_test',
+    msg => getvariable('report'),
+    color => 'good'
+);
+-- Use color => 'danger' for an alert.
+```
+
+Construct the message from query results as needed. Slack's message and Block
+Kit size limits apply; this function does not paginate or split a report.
 
 The result contains one row:
 

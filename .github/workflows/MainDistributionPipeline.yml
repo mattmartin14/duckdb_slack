@@ -27,4 +27,26 @@ jobs:
       duckdb_version: v2.0.0
       ci_tools_version: v2.0-cyanoptera
       extension_name: slack
-      format_checks: 'format;tidy'
+      format_checks: 'format'
+
+  tidy-check:
+    name: Code Quality Check / Tidy Check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          submodules: recursive
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq ninja-build clang-tidy libcurl4-openssl-dev nlohmann-json3-dev
+      - name: Tidy Check
+        run: |
+          cmake -G Ninja -DDUCKDB_EXTENSION_CONFIGS="$GITHUB_WORKSPACE/extension_config.cmake" \
+            -DDISABLE_UNITY=1 -DCLANG_TIDY=1 -DCMAKE_BUILD_TYPE=Debug \
+            -S duckdb -B build/tidy
+          cp duckdb/.clang-tidy build/tidy/.clang-tidy
+          cd build/tidy
+          python3 ../../duckdb/scripts/run-clang-tidy.py "$GITHUB_WORKSPACE/src/.*" \
+            -header-filter "$GITHUB_WORKSPACE/src/.*" -quiet -j 4

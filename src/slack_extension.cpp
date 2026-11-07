@@ -19,22 +19,24 @@ namespace {
 constexpr const char *SLACK_SECRET_TYPE = "slack";
 constexpr const char *WEBHOOK_URL_KEY = "webhook_url";
 constexpr const char *TEST_WEBHOOK_URL = "https://hooks.slack.com/services/T000/B000/test";
-constexpr idx_t MAX_RESPONSE_SIZE = 1024 * 1024;
+constexpr idx_t MAX_RESPONSE_SIZE = 1024ULL * 1024;
 
 struct SlackPostBindData : public FunctionData {
 	string secret_name;
 	string message;
+	string color;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<SlackPostBindData>();
 		result->secret_name = secret_name;
 		result->message = message;
+		result->color = color;
 		return std::move(result);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<SlackPostBindData>();
-		return secret_name == other.secret_name && message == other.message;
+		return secret_name == other.secret_name && message == other.message && color == other.color;
 	}
 };
 
@@ -159,10 +161,16 @@ struct SlackPostResult {
 	string message;
 };
 
-SlackPostResult PostWebhook(const string &webhook_url, const string &message) {
+SlackPostResult PostWebhook(const string &webhook_url, const string &message, const string &color) {
 	InitializeCurl();
 	auto request_url = GetRequestUrl(webhook_url);
-	auto json_body = nlohmann::json {{"text", message}}.dump();
+	nlohmann::json payload = {{"text", message}};
+	if (!color.empty()) {
+		nlohmann::json block = {{"type", "section"}, {"text", {{"type", "mrkdwn"}, {"text", message}}}};
+		payload["attachments"] = nlohmann::json::array(
+		    {{{"color", color}, {"fallback", message}, {"blocks", nlohmann::json::array({block})}}});
+	}
+	auto json_body = payload.dump();
 	HttpResponse response;
 	auto curl = curl_easy_init();
 	if (!curl) {
@@ -200,7 +208,7 @@ SlackPostResult PostWebhook(const string &webhook_url, const string &message) {
 	}
 
 	auto curl_result = curl_easy_perform(curl);
-	long status_code = 0;
+	long status_code = 0; // NOLINT: curl_easy_getinfo requires a long pointer.
 	auto info_result = CURLE_OK;
 	if (curl_result == CURLE_OK) {
 		info_result = curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status_code);
@@ -242,10 +250,20 @@ unique_ptr<FunctionData> SlackPostBind(ClientContext &, TableFunctionBindInput &
 	if (message_entry == input.named_parameters.end()) {
 		throw BinderException("slack_post requires the named parameter msg");
 	}
+	if (input.inputs[0].IsNull() || message_entry->second.IsNull()) {
+		throw BinderException("slack_post secret_name and msg must not be NULL");
+	}
 
 	auto result = make_uniq<SlackPostBindData>();
 	result->secret_name = input.inputs[0].GetValue<string>();
 	result->message = message_entry->second.GetValue<string>();
+	auto color_entry = input.named_parameters.find(Identifier("color"));
+	if (color_entry != input.named_parameters.end() && !color_entry->second.IsNull()) {
+		result->color = StringUtil::Lower(color_entry->second.GetValue<string>());
+		if (result->color != "good" && result->color != "danger") {
+			throw BinderException("slack_post color must be 'good' or 'danger'");
+		}
+	}
 
 	return_types = {LogicalType::BOOLEAN, LogicalType::VARCHAR, LogicalType::VARCHAR, LogicalType::VARCHAR};
 	names = {Identifier("success"), Identifier("channel"), Identifier("message_ts"), Identifier("message")};
@@ -286,7 +304,7 @@ void SlackPostFunction(ClientContext &context, TableFunctionInput &input, DataCh
 	if (bind_data.message.empty()) {
 		result.message = "Slack message must not be empty";
 	} else {
-		result = PostWebhook(webhook_url, bind_data.message);
+		result = PostWebhook(webhook_url, bind_data.message, bind_data.color);
 	}
 
 	output.SetCardinalityUnsafe(1);
@@ -317,8 +335,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	loader.RegisterFunction(std::move(create_secret));
 
 	FunctionSignature signature;
-	signature.AddPositionalOnly("secret_name", LogicalType::VARCHAR);
+	signature.AddParameter("secret_name", LogicalType::VARCHAR);
 	signature.AddKeywordOnly("msg", LogicalType::VARCHAR);
+	signature.AddKeywordOnly("color", LogicalType::VARCHAR, Value(LogicalType::VARCHAR));
 	TableFunction post_function("slack_post", std::move(signature), SlackPostFunction, SlackPostBind,
 	                            SlackPostInitGlobal);
 	post_function.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;

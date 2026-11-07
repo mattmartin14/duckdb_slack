@@ -8,8 +8,13 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 .PHONY: test_slack_integration
-test: test_slack_integration
-
-test_release: release
+ifneq ($(filter test,$(MAKECMDGOALS)),)
 test_slack_integration: release
-	python3 test/integration/slack_webhook_test.py
+endif
+test_release: test_slack_integration
+test_slack_integration:
+	@if [ "$(SKIP_TESTS)" = "1" ]; then \
+		echo "Slack integration tests are skipped in this run..."; \
+	else \
+		python3 test/integration/slack_webhook_test.py; \
+	fi

@@ -11,4 +11,6 @@ make test_debug
 ```
 
 The webhook HTTP integration tests are run by the root `make test` target and
-use a loopback-only mock server. They do not contact Slack.
+use a loopback-only mock server. They do not contact Slack. They verify the
+outgoing plain-text payload and formatted table cards with `good` and `danger`
+colors, in addition to delivery failures and secret handling.

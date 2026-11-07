@@ -4,6 +4,6 @@ CREATE SECRET slack_test (
 );
 
 CALL slack_post(
-    'slack_test',
+    secret_name => 'slack_test',
     msg => 'Hello from DuckDB!'
 );

@@ -86,18 +86,23 @@ def result_row(stdout):
     raise AssertionError(f"Could not find slack_post result row in output:\n{stdout}")
 
 
-def call_sql(message):
+def call_sql(message, named_secret=False):
     escaped_message = message.replace("'", "''")
+    secret_argument = "secret_name => 'slack_test'" if named_secret else "'slack_test'"
     return (
         f"LOAD '{EXTENSION}'; "
         f"CREATE TEMP SECRET slack_test (TYPE slack, WEBHOOK_URL '{FAKE_WEBHOOK}'); "
-        f"CALL slack_post('slack_test', msg => '{escaped_message}');"
+        f"CALL slack_post({secret_argument}, msg => '{escaped_message}');"
     )
 
 
-def run_post(endpoint, message, expected_success, expected_text):
+def run_post(endpoint, message, expected_success, expected_text, named_secret=False):
     before = len(MockSlackHandler.requests)
-    result = run_sql(call_sql(message), endpoint, timeout=25 if message == "timeout" else 10)
+    result = run_sql(
+        call_sql(message, named_secret=named_secret),
+        endpoint,
+        timeout=25 if message == "timeout" else 10,
+    )
     if result.returncode:
         raise AssertionError(f"DuckDB failed:\n{result.stderr}\n{result.stdout}")
     row = result_row(result.stdout)
@@ -112,6 +117,39 @@ def run_post(endpoint, message, expected_success, expected_text):
     assert path == "/mock-post", path
     assert content_type == "application/json; charset=utf-8", content_type
     assert json.loads(body) == {"text": message}, body
+
+
+def run_table_post(endpoint, color):
+    table = "```\nMetric     | Count\n-----------+------\nProcessed  |    42\nFailed     |     0\n```"
+    sql = (
+        f"LOAD '{EXTENSION}'; "
+        f"CREATE TEMP SECRET slack_test (TYPE slack, WEBHOOK_URL '{FAKE_WEBHOOK}'); "
+        "SET VARIABLE report = (SELECT concat('```', chr(10), "
+        "'Metric     | Count', chr(10), '-----------+------', chr(10), "
+        "string_agg(printf('%-10s | %5d', metric, count), chr(10) ORDER BY idx), "
+        "chr(10), '```') "
+        "FROM (VALUES (1, 'Processed', 42), (2, 'Failed', 0)) AS data(idx, metric, count)); "
+        f"CALL slack_post(secret_name => 'slack_test', msg => getvariable('report'), color => '{color}');"
+    )
+    before = len(MockSlackHandler.requests)
+    result = run_sql(sql, endpoint)
+    if result.returncode:
+        raise AssertionError(f"DuckDB failed:\n{result.stderr}\n{result.stdout}")
+    assert result_row(result.stdout)["success"] == "true", result.stdout
+    assert len(MockSlackHandler.requests) == before + 1
+    path, content_type, body = MockSlackHandler.requests[-1]
+    assert path == "/mock-post"
+    assert content_type == "application/json; charset=utf-8"
+    assert json.loads(body) == {
+        "text": table,
+        "attachments": [
+            {
+                "color": color,
+                "fallback": table,
+                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": table}}],
+            }
+        ],
+    }, body
 
 
 def run_persistent_secret_tests():
@@ -169,12 +207,20 @@ def main():
     server_thread.start()
     endpoint = f"http://127.0.0.1:{server.server_port}/mock-post"
     try:
-        run_post(endpoint, 'escaped "quote" and newline\n', True, "accepted")
+        run_post(
+            endpoint,
+            'escaped "quote" and newline\n',
+            True,
+            "accepted",
+            named_secret=True,
+        )
         run_post(endpoint, "api-error", False, "HTTP 403")
         run_post(endpoint, "rate-limited", False, "retry after 4 seconds")
         run_post(endpoint, "malformed", False, "invalid webhook response")
         run_post(endpoint, "disconnect", False, "request failed")
         run_post(endpoint, "timeout", False, "request failed")
+        run_table_post(endpoint, "good")
+        run_table_post(endpoint, "danger")
         run_test_override_safety(endpoint)
         run_persistent_secret_tests()
     finally:

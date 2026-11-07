@@ -26,6 +26,11 @@ CALL slack_post('missing_secret', msg => 'test');
 Slack secret 'missing_secret' was not found
 
 statement error
+CALL slack_post(secret_name => 'missing_secret', msg => 'test');
+----
+Slack secret 'missing_secret' was not found
+
+statement error
 CALL slack_post('slack_wrong_type', msg => 'test');
 ----
 Secret 'slack_wrong_type' is not a Slack secret
@@ -37,5 +42,25 @@ Binder Error
 
 statement error
 CALL slack_post('slack_test', 'test');
+----
+Binder Error
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', color => 'blue');
+----
+slack_post color must be 'good' or 'danger'
+
+statement error
+CALL slack_post(secret_name => NULL, msg => 'test');
+----
+slack_post secret_name and msg must not be NULL
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => NULL);
+----
+slack_post secret_name and msg must not be NULL
+
+statement error
+CALL slack_post('slack_test', secret_name => 'slack_test', msg => 'test');
 ----
 Binder Error
