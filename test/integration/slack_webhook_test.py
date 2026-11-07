@@ -6,6 +6,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import socket
 import subprocess
 import tempfile
@@ -14,7 +15,13 @@ import time
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-DUCKDB = ROOT / "build/release/duckdb"
+
+
+def duckdb_executable(root, platform):
+    return root / "build" / "release" / ("duckdb.exe" if platform == "nt" else "duckdb")
+
+
+DUCKDB = duckdb_executable(ROOT, os.name)
 EXTENSION = ROOT / "build/release/extension/slack/slack.duckdb_extension"
 FAKE_WEBHOOK = "https://hooks.slack.com/services/T000/B000/test"
 
@@ -119,17 +126,15 @@ def run_post(endpoint, message, expected_success, expected_text, named_secret=Fa
     assert json.loads(body) == {"text": message}, body
 
 
-def run_table_post(endpoint, color):
-    table = "```\nMetric     | Count\n-----------+------\nProcessed  |    42\nFailed     |     0\n```"
+def run_table_post(endpoint, color, severity, emoji, attachment_color, title="Sales ETL"):
     sql = (
         f"LOAD '{EXTENSION}'; "
         f"CREATE TEMP SECRET slack_test (TYPE slack, WEBHOOK_URL '{FAKE_WEBHOOK}'); "
-        "SET VARIABLE report = (SELECT concat('```', chr(10), "
-        "'Metric     | Count', chr(10), '-----------+------', chr(10), "
-        "string_agg(printf('%-10s | %5d', metric, count), chr(10) ORDER BY idx), "
-        "chr(10), '```') "
+        "SET VARIABLE report = (SELECT map_from_entries("
+        "list((metric, count::VARCHAR) ORDER BY idx)) "
         "FROM (VALUES (1, 'Processed', 42), (2, 'Failed', 0)) AS data(idx, metric, count)); "
-        f"CALL slack_post(secret_name => 'slack_test', msg => getvariable('report'), color => '{color}');"
+        "CALL slack_post(secret_name => 'slack_test', msg => 'ETL completed', "
+        f"title => '{title}', fields => getvariable('report'), color => '{color}');"
     )
     before = len(MockSlackHandler.requests)
     result = run_sql(sql, endpoint)
@@ -140,16 +145,74 @@ def run_table_post(endpoint, color):
     path, content_type, body = MockSlackHandler.requests[-1]
     assert path == "/mock-post"
     assert content_type == "application/json; charset=utf-8"
-    assert json.loads(body) == {
-        "text": table,
-        "attachments": [
-            {
-                "color": color,
-                "fallback": table,
-                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": table}}],
-            }
+    payload = json.loads(body)
+    assert payload["text"] == title, payload
+    attachment = payload["attachments"][0]
+    assert len(payload["attachments"]) == 1
+    assert attachment["color"] == attachment_color
+    assert attachment["fallback"] == f"{title}: ETL completed"
+    blocks = attachment["blocks"]
+    assert len(blocks) == 4
+    assert blocks[0] == {
+        "type": "header",
+        "text": {"type": "plain_text", "text": f"{emoji} {title}", "emoji": True},
+    }
+    assert blocks[1]["type"] == "section"
+    assert blocks[1]["fields"][0] == {"type": "mrkdwn", "text": f"*Severity*\n{severity}"}
+    assert re.fullmatch(
+        r"\*Timestamp\*\n\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC", blocks[1]["fields"][1]["text"]
+    ), blocks[1]
+    assert blocks[2] == {"type": "section", "text": {"type": "mrkdwn", "text": "*Details*\nETL completed"}}
+    assert blocks[3] == {
+        "type": "section",
+        "fields": [
+            {"type": "mrkdwn", "text": "*Processed*\n42"},
+            {"type": "mrkdwn", "text": "*Failed*\n0"},
         ],
-    }, body
+    }
+
+
+def run_field_batch_test(endpoint, count):
+    sql = (
+        f"LOAD '{EXTENSION}'; "
+        f"CREATE TEMP SECRET slack_test (TYPE slack, WEBHOOK_URL '{FAKE_WEBHOOK}'); "
+        "SET VARIABLE report = (SELECT map_from_entries(list(('metric' || i, i::VARCHAR) ORDER BY i)) "
+        f"FROM range({count}) AS data(i)); "
+        "CALL slack_post('slack_test', msg => 'Report', color => 'info', fields => getvariable('report'));"
+    )
+    before = len(MockSlackHandler.requests)
+    result = run_sql(sql, endpoint)
+    if result.returncode:
+        raise AssertionError(f"DuckDB failed:\n{result.stderr}\n{result.stdout}")
+    assert result_row(result.stdout)["success"] == "true", result.stdout
+    assert len(MockSlackHandler.requests) == before + 1
+    payload = json.loads(MockSlackHandler.requests[-1][2])
+    assert payload["text"] == "Slack Notification"
+    field_blocks = payload["attachments"][0]["blocks"][3:]
+    expected_sizes = [10] * (count // 10)
+    if count % 10:
+        expected_sizes.append(count % 10)
+    assert [len(block["fields"]) for block in field_blocks] == expected_sizes
+    assert field_blocks[-1]["fields"][-1]["text"] == f"*metric{count - 1}*\n{count - 1}"
+
+
+def run_code_block_card_test(endpoint):
+    table = "```\nMetric | Count\nFailed | 0\n```"
+    sql = (
+        f"LOAD '{EXTENSION}'; "
+        f"CREATE TEMP SECRET slack_test (TYPE slack, WEBHOOK_URL '{FAKE_WEBHOOK}'); "
+        f"CALL slack_post('slack_test', msg => '{table}', color => 'GOOD');"
+    )
+    before = len(MockSlackHandler.requests)
+    result = run_sql(sql, endpoint)
+    if result.returncode:
+        raise AssertionError(f"DuckDB failed:\n{result.stderr}\n{result.stdout}")
+    assert result_row(result.stdout)["success"] == "true", result.stdout
+    assert len(MockSlackHandler.requests) == before + 1
+    payload = json.loads(MockSlackHandler.requests[-1][2])
+    assert payload["text"] == "Slack Notification"
+    assert payload["attachments"][0]["blocks"][2]["text"]["text"] == "*Details*\n" + table
+    assert table not in payload["text"]
 
 
 def run_persistent_secret_tests():
@@ -198,8 +261,12 @@ def run_test_override_safety(endpoint):
 
 
 def main():
-    if not DUCKDB.exists() or not EXTENSION.exists():
-        raise SystemExit("Build the extension first with `make`")
+    assert duckdb_executable(ROOT, "nt") == ROOT / "build/release/duckdb.exe"
+    assert duckdb_executable(ROOT, "posix") == ROOT / "build/release/duckdb"
+    if not DUCKDB.is_file():
+        raise SystemExit(f"DuckDB executable not found: {DUCKDB}. Build the extension first with `make`.")
+    if not EXTENSION.is_file():
+        raise SystemExit(f"Slack extension not found: {EXTENSION}. Build the extension first with `make`.")
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), MockSlackHandler)
     server.daemon_threads = True
@@ -219,8 +286,12 @@ def main():
         run_post(endpoint, "malformed", False, "invalid webhook response")
         run_post(endpoint, "disconnect", False, "request failed")
         run_post(endpoint, "timeout", False, "request failed")
-        run_table_post(endpoint, "good")
-        run_table_post(endpoint, "danger")
+        run_table_post(endpoint, "good", "SUCCESS", ":white_check_mark:", "#2EB67D")
+        run_table_post(endpoint, "danger", "ERROR", ":red_circle:", "#E01E5A")
+        run_table_post(endpoint, "info", "INFO", ":large_blue_circle:", "#2EB67D", title="[Custom] Sales ETL")
+        run_field_batch_test(endpoint, 11)
+        run_field_batch_test(endpoint, 470)
+        run_code_block_card_test(endpoint)
         run_test_override_safety(endpoint)
         run_persistent_secret_tests()
     finally:

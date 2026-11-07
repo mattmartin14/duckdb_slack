@@ -4,6 +4,7 @@
 
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/types/timestamp.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 
 #include <curl/curl.h>
@@ -25,18 +26,23 @@ struct SlackPostBindData : public FunctionData {
 	string secret_name;
 	string message;
 	string color;
+	string title;
+	vector<pair<string, string>> fields;
 
 	unique_ptr<FunctionData> Copy() const override {
 		auto result = make_uniq<SlackPostBindData>();
 		result->secret_name = secret_name;
 		result->message = message;
 		result->color = color;
+		result->title = title;
+		result->fields = fields;
 		return std::move(result);
 	}
 
 	bool Equals(const FunctionData &other_p) const override {
 		auto &other = other_p.Cast<SlackPostBindData>();
-		return secret_name == other.secret_name && message == other.message && color == other.color;
+		return secret_name == other.secret_name && message == other.message && color == other.color &&
+		       title == other.title && fields == other.fields;
 	}
 };
 
@@ -161,16 +167,44 @@ struct SlackPostResult {
 	string message;
 };
 
-SlackPostResult PostWebhook(const string &webhook_url, const string &message, const string &color) {
+nlohmann::json BuildSlackPayload(const SlackPostBindData &data) {
+	if (data.color.empty()) {
+		return {{"text", data.message}};
+	}
+
+	auto severity = data.color == "good" ? "SUCCESS" : data.color == "danger" ? "ERROR" : "INFO";
+	auto emoji = data.color == "good"     ? ":white_check_mark:"
+	             : data.color == "danger" ? ":red_circle:"
+	                                      : ":large_blue_circle:";
+	auto color = data.color == "danger" ? "#E01E5A" : "#2EB67D";
+	auto &summary = data.title;
+	auto fallback = summary + ": " + data.message;
+	auto timestamp = Timestamp::ToString(Timestamp::GetCurrentTimestamp()).substr(0, 19) + " UTC";
+	nlohmann::json blocks = nlohmann::json::array();
+	blocks.push_back({{"type", "header"},
+	                  {"text", {{"type", "plain_text"}, {"text", string(emoji) + " " + data.title}, {"emoji", true}}}});
+	blocks.push_back(
+	    {{"type", "section"},
+	     {"fields", nlohmann::json::array({{{"type", "mrkdwn"}, {"text", string("*Severity*\n") + severity}},
+	                                       {{"type", "mrkdwn"}, {"text", "*Timestamp*\n" + timestamp}}})}});
+	blocks.push_back({{"type", "section"}, {"text", {{"type", "mrkdwn"}, {"text", "*Details*\n" + data.message}}}});
+	for (idx_t offset = 0; offset < data.fields.size(); offset += 10) {
+		auto fields = nlohmann::json::array();
+		for (idx_t i = offset; i < MinValue<idx_t>(offset + 10, data.fields.size()); i++) {
+			fields.push_back(
+			    {{"type", "mrkdwn"}, {"text", "*" + data.fields[i].first + "*\n" + data.fields[i].second}});
+		}
+		blocks.push_back({{"type", "section"}, {"fields", std::move(fields)}});
+	}
+	return {{"text", summary},
+	        {"attachments",
+	         nlohmann::json::array({{{"color", color}, {"fallback", fallback}, {"blocks", std::move(blocks)}}})}};
+}
+
+SlackPostResult PostWebhook(const string &webhook_url, const SlackPostBindData &data) {
 	InitializeCurl();
 	auto request_url = GetRequestUrl(webhook_url);
-	nlohmann::json payload = {{"text", message}};
-	if (!color.empty()) {
-		nlohmann::json block = {{"type", "section"}, {"text", {{"type", "mrkdwn"}, {"text", message}}}};
-		payload["attachments"] = nlohmann::json::array(
-		    {{{"color", color}, {"fallback", message}, {"blocks", nlohmann::json::array({block})}}});
-	}
-	auto json_body = payload.dump();
+	auto json_body = BuildSlackPayload(data).dump();
 	HttpResponse response;
 	auto curl = curl_easy_init();
 	if (!curl) {
@@ -260,8 +294,31 @@ unique_ptr<FunctionData> SlackPostBind(ClientContext &, TableFunctionBindInput &
 	auto color_entry = input.named_parameters.find(Identifier("color"));
 	if (color_entry != input.named_parameters.end() && !color_entry->second.IsNull()) {
 		result->color = StringUtil::Lower(color_entry->second.GetValue<string>());
-		if (result->color != "good" && result->color != "danger") {
-			throw BinderException("slack_post color must be 'good' or 'danger'");
+		if (result->color != "good" && result->color != "danger" && result->color != "info") {
+			throw BinderException("slack_post color must be 'good', 'danger', or 'info'");
+		}
+	}
+	auto title_entry = input.named_parameters.find(Identifier("title"));
+	auto fields_entry = input.named_parameters.find(Identifier("fields"));
+	bool has_title = title_entry != input.named_parameters.end() && !title_entry->second.IsNull();
+	bool has_fields = fields_entry != input.named_parameters.end() && !fields_entry->second.IsNull();
+	if (result->color.empty() && (has_title || has_fields)) {
+		throw BinderException("slack_post title and fields require color");
+	}
+	result->title = has_title ? title_entry->second.GetValue<string>() : "Slack Notification";
+	if (has_title && result->title.empty()) {
+		throw BinderException("slack_post title must not be empty");
+	}
+	if (has_fields) {
+		for (auto &entry : MapValue::GetChildren(fields_entry->second)) {
+			auto &values = StructValue::GetChildren(entry);
+			if (values[0].IsNull() || values[1].IsNull() || values[0].GetValue<string>().empty()) {
+				throw BinderException("slack_post fields must have non-empty keys and non-NULL values");
+			}
+			result->fields.emplace_back(values[0].GetValue<string>(), values[1].GetValue<string>());
+		}
+		if (result->fields.size() > 470) {
+			throw BinderException("slack_post supports at most 470 fields");
 		}
 	}
 
@@ -304,7 +361,7 @@ void SlackPostFunction(ClientContext &context, TableFunctionInput &input, DataCh
 	if (bind_data.message.empty()) {
 		result.message = "Slack message must not be empty";
 	} else {
-		result = PostWebhook(webhook_url, bind_data.message, bind_data.color);
+		result = PostWebhook(webhook_url, bind_data);
 	}
 
 	output.SetCardinalityUnsafe(1);
@@ -338,6 +395,9 @@ void LoadInternal(ExtensionLoader &loader) {
 	signature.AddParameter("secret_name", LogicalType::VARCHAR);
 	signature.AddKeywordOnly("msg", LogicalType::VARCHAR);
 	signature.AddKeywordOnly("color", LogicalType::VARCHAR, Value(LogicalType::VARCHAR));
+	signature.AddKeywordOnly("title", LogicalType::VARCHAR, Value(LogicalType::VARCHAR));
+	auto fields_type = LogicalType::MAP(LogicalType::VARCHAR, LogicalType::VARCHAR);
+	signature.AddKeywordOnly("fields", fields_type, Value(fields_type));
 	TableFunction post_function("slack_post", std::move(signature), SlackPostFunction, SlackPostBind,
 	                            SlackPostInitGlobal);
 	post_function.parallelism = TableFunctionParallelism::FORCE_SINGLE_THREADED;

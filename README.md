@@ -15,7 +15,7 @@ currently published or installable with `INSTALL slack FROM community`.
 - HTTPS JSON requests, TLS certificate verification, bounded timeouts, and
   no automatic retries.
 - A single success or failure status row for each invocation.
-- Optional green or red message cards for formatted reports.
+- Optional success, error, and informational cards with structured report fields.
 
 The v1 webhook interface does not use a bot token or `chat.postMessage`. Slack
 incoming webhooks select their channel when the webhook is created, so the SQL
@@ -95,31 +95,85 @@ and must be passed by name. The destination channel is fixed by the webhook.
 
 ### Formatted table notifications
 
-Use the optional `color` argument with `good` (green) or `danger` (red) to
-send a Slack card. `msg` is rendered as Slack mrkdwn in the card; use triple
-backticks to keep a table aligned in a monospace code block. Without `color`,
-the existing plain-text payload is unchanged.
+Use `color => 'good'`, `'danger'`, or `'info'` to send a structured Slack
+card. Like the reference notifications, these display a title, severity,
+UTC timestamp, details, and optional two-column fields. `good` uses a green
+accent and success icon, `danger` a red accent and error icon, and `info` a
+green accent and blue info icon. Without `color`, the plain-text payload is
+unchanged. Set `title` and `fields` only when `color` is supplied.
+
+**Success: completed processing**
 
 ```sql
 SET VARIABLE report = (
-    SELECT concat('```', chr(10),
-        'Metric     | Count', chr(10),
-        '-----------+------', chr(10),
-        string_agg(printf('%-10s | %5d', metric, count), chr(10) ORDER BY idx),
-        chr(10), '```')
+    SELECT map_from_entries(list((metric, count::VARCHAR) ORDER BY idx))
     FROM (VALUES (1, 'Processed', 42), (2, 'Failed', 0)) AS data(idx, metric, count)
 );
 
 CALL slack_post(
     secret_name => 'slack_test',
-    msg => getvariable('report'),
-    color => 'good'
+    msg => 'The ETL process completed successfully.',
+    color => 'good',
+    title => 'Sales ETL Completed',
+    fields => getvariable('report')
 );
--- Use color => 'danger' for an alert.
 ```
 
-Construct the message from query results as needed. Slack's message and Block
-Kit size limits apply; this function does not paginate or split a report.
+**Info: an import is in progress**
+
+```sql
+SET VARIABLE import_status = (
+    SELECT map_from_entries(list((label, value) ORDER BY idx))
+    FROM (VALUES
+        (1, 'Source', 'daily_orders.csv'),
+        (2, 'Stage', 'Loading'),
+        (3, 'Rows loaded', '125000'),
+        (4, 'Next step', 'Validate records')
+    ) AS data(idx, label, value)
+);
+
+CALL slack_post(
+    secret_name => 'slack_test',
+    msg => 'The daily order import is running.',
+    color => 'info',
+    title => 'Order Import Update',
+    fields => getvariable('import_status')
+);
+```
+
+**Error: a file failed validation**
+
+```sql
+SET VARIABLE validation_error = (
+    SELECT map_from_entries(list((label, value) ORDER BY idx))
+    FROM (VALUES
+        (1, 'Source', 'daily_orders.csv'),
+        (2, 'Stage', 'Validation'),
+        (3, 'Error type', 'Invalid date'),
+        (4, 'Rejected rows', '12'),
+        (5, 'Next step', 'Review the rejected rows and retry')
+    ) AS data(idx, label, value)
+);
+
+CALL slack_post(
+    secret_name => 'slack_test',
+    msg => 'The daily order import stopped because some order dates were invalid.',
+    color => 'danger',
+    title => 'Order Import Failed',
+    fields => getvariable('validation_error')
+);
+```
+
+`fields` is a `MAP(VARCHAR, VARCHAR)`; cast numeric values to `VARCHAR` when
+building the map. Each entry is a labeled field, not a row in a multi-column
+data table. Slack renders two fields side by side, with a maximum of 10 fields
+per section; the extension splits larger maps into sections. Field keys must
+be non-empty and values non-NULL. Cards support at most 470 fields, and
+Slack's other message and Block Kit size limits apply. `msg` and fields use
+Slack mrkdwn. The top-level notification uses the supplied title without a
+severity prefix, so the details are not displayed twice. Add any desired
+label to `title`; severity still appears in the card body. The attachment
+fallback includes the details for clients that do not render blocks.
 
 The result contains one row:
 

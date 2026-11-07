@@ -48,7 +48,43 @@ Binder Error
 statement error
 CALL slack_post(secret_name => 'slack_test', msg => 'test', color => 'blue');
 ----
-slack_post color must be 'good' or 'danger'
+slack_post color must be 'good', 'danger', or 'info'
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', title => 'report');
+----
+slack_post title and fields require color
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', fields => MAP {'count': '1'});
+----
+slack_post title and fields require color
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', color => 'good', title => '');
+----
+slack_post title must not be empty
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', color => 'good', fields => MAP {'count': NULL});
+----
+slack_post fields must have non-empty keys and non-NULL values
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', color => 'good', fields => MAP {'': 'value'});
+----
+slack_post fields must have non-empty keys and non-NULL values
+
+statement ok
+SET VARIABLE too_many_fields = (
+    SELECT map_from_entries(list(('metric' || i, i::VARCHAR) ORDER BY i))
+    FROM range(471) AS data(i)
+);
+
+statement error
+CALL slack_post(secret_name => 'slack_test', msg => 'test', color => 'good', fields => getvariable('too_many_fields'));
+----
+slack_post supports at most 470 fields
 
 statement error
 CALL slack_post(secret_name => NULL, msg => 'test');
